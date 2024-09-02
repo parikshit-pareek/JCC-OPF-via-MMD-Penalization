@@ -8,7 +8,6 @@ Raw codes used for the paper [Non-parametric Joint Chance-Constrained OPF via Ma
   volume={212},
   pages={108482},
   year={2022},
-  publisher={Elsevier}
-}
+  publisher={Elsevier}}
 ```
 To Run, see mmd_dc_ccopf_XXX.m files
