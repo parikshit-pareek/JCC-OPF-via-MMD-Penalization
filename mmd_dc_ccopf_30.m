@@ -1,6 +1,6 @@
 %% This is the final code to be used for the MMD Penalization based JCC-OPF. 
 
-% Works for Pglib 14 and 57 bus test cases and comparion
+% Works for Pglib 30 bus test cases and comparion
 % Significant Modification: 1) JCC-OPF as vectorized constraints to allow tractability
 %                           2) Decision variable sagragation of MMD to allow the convergence
 %                           3) DCOPF now has both generator bus load and load bus node is uncertain
