@@ -10,9 +10,12 @@
 % Parikshit 
 % 3 Sept 2021
 
+
 % Study : 
 %         A) Effect of weights
 %         b) Effect of number of samples
+
+
 %-----------------------------------------------------------------------------------------------------------
 clear
 clc
@@ -20,67 +23,44 @@ clc
 format short g
 
 
-data = ext2int(pglib_opf_case30_as);
-% data.gen(:,10) = 0;
-data.bus(:,3) = data.bus(:,3)*1.1;
-
-data.gen(:,9) = data.gen(:,9);
-data.branch(:,6) = data.branch(:,6);
-
+data = ext2int(pglib_opf_case118_ieee);
+% data.gen(11,9) = 170;
 solver_name = 'mosek';
- dist_type = 'beta';
- frac_pen = 0.20;
+dist_type = 'normal';
+frac_pen = 0.01;
 w_j = 1; 
-% with normal beta 400 for 25% normal,beta, laplace & 1000 for mix    Weibull does not converge 
-w_mmd_pg = 0.001; % 0.001 for normal, beta ,laplace  for mix 
-
-% 1000000 fixed with simple beta
-w_mmd_alpha = 50; % with sum_beta = 1;
-% target_size = 150; % Number of samples used for mmd construction 
+w_mmd_pg = 0.01200;
+w_mmd_alpha = 1000;
+target_size = 100; % Number of samples used for mmd construction 
 
 
 [Det_DCOPF] = deterministic_DCOPF(data,solver_name);
 Res.Det_DCOPF = Det_DCOPF;
 % DC_det = rundcopf(data);
 
- nt_r = 10000; % Total number of samples nt_r >>>>> N
+nt_r = 500; % Total number of samples nt_r >>>>> N
 
-rbus = [2;16;21];
-% rbus = find(data.bus(:,3) > 0);
-Res.rbus = rbus;
 
-[Des_DCOPF] = desired_dist_DCOPF_local(data,nt_r,rbus,frac_pen,dist_type,solver_name);
+
+[Des_DCOPF] = desired_dist_DCOPF_local(data,target_size,nt_r,frac_pen,dist_type,solver_name);
 Res.Des_DCOPF = Des_DCOPF;
 if Des_DCOPF.sol.problem  ~=0
     return
 end
 tic
-% [big_sample_size_row,~, ~]=size(Des_DCOPF.xs_pen);
-% idex=randi(big_sample_size_row, 1 ,target_size);
 
-% rd_set = Des_DCOPF.xs_nonzero(idex,:,:); % Reduced samples for only bus 8 and 15
-% rd_set_full = Des_DCOPF.xs_pen(idex,:,:); % Reduced samples for all the buses
-% op = struct();
-% ker= myProcessOptions(op, 'mmd_kernel', KGaussian(meddistance(rd_set)^2)); 
-% kz=ker.eval(rd_set', rd_set');
-% kzx=ker.eval(rd_set', Des_DCOPF.xs_nonzero');
-% alp=1*ones(big_sample_size_row,1);
-% rd_set_coeff=(pinv(kz)*kzx*alp)./big_sample_size_row; % Weight of the reduced set 
-
+[z,rd_set_coeff,rd_set,sol] = reduced_set_l1_penalization_local(solver_name,Des_DCOPF.xs_pen,5,Des_DCOPF.K);
+target_size = length(rd_set(:,1));
 
 %%  Formulating the CC-DCOPF constraints as MMD  
 const = ex_extract_ccDCOPF(data); %% Extract information from the MPC structure
-rated_cap = sum(data.bus(const.loadbuses,3)*frac_pen)/length(const.loadbuses); % Total Rated capacity is fraction of total load at load buses
-[z,rd_set_coeff,rd_set,sol] = reduced_set_l1_penalization(solver_name,Des_DCOPF.xs_pen,5,Des_DCOPF.K);
-target_size = length(rd_set(:,1));
-
 % ----------------------------------------------------------------------------------------------------------------------
 % Calulating Value of F_star = A1 * u_star + Ao; at different DCOPF samples
 % F_star = zeros(2*const.ngen+2*const.nline,target_size);
-xi_all = Des_DCOPF.xi;
+xi_all = Des_DCOPF.xs_pen;
 g_dc = Des_DCOPF.g;
 for j =1:target_size
-    [A1_dc,Ao_dc] = dcopf_a1ao_dhatg(xi_all(j,:)',data,rbus);
+    [A1_dc,Ao_dc] = dcopf_a1ao_dhatg(xi_all(j,:)',data);
     F_star(:,j) = A1_dc * g_dc  + Ao_dc;  % All values must be less than zero to have a correct feasible DCOPF solution
 end
 % ----------------------------------------------------------------------------------------------------------------------
@@ -88,7 +68,7 @@ end
 % A1_rd_set = zeros(2*const.ngen+2*const.nline,2*const.ngen,target_size);
 % Ao_rd_set = zeros(2*const.ngen+2*const.nline,target_size);
 for j= 1:target_size
-[A1_rd_set(:,:,j),Ao_rd_set(:,j)] = dcopf_a1ao_dhatg(rd_set(j,:)',data,rbus);
+[A1_rd_set(:,:,j),Ao_rd_set(:,j)] = dcopf_a1ao_dhatg(rd_set(j,:)',data);
 end
 t = size(A1_rd_set,1);
 for k = 1:2*const.ngen
@@ -102,6 +82,7 @@ end
 % < mu_d , mu_d > : Inner product of DCOPF constraint set (F_star) in RKHS 
 % mmd_A = < mu_d , mu_d >
 op = struct();
+
 kerF= myProcessOptions(op, 'mmd_kernel', KGaussian(meddistance(F_star)^2)); 
 K_FsFs=kerF.eval(F_star, F_star);
 mmd_A = Des_DCOPF.desired_beta' * K_FsFs * Des_DCOPF.desired_beta ;  
@@ -195,71 +176,65 @@ constr_det = [sum(g(1:const.ngen)) == sum(const.d_hat);
     const.g_l <= g(1:const.ngen) <= const.g_u;
     g(const.ngen+sync) == 0;  % removing alphas for synchronous condensors 
 %     mmd_alpha >=0;
-    sum(g(const.ngen+1:end)) == 1; zeros(const.ngen,1) <= g(const.ngen+1:end) <= ones(const.ngen,1);
-    g(const.ngen+1:const.ngen+2)<=0.16];
+    sum(g(const.ngen+1:end)) == 1; zeros(const.ngen,1) <= g(const.ngen+1:end) <= ones(const.ngen,1)];
+
 
 ops = sdpsettings('solver','fmincon','verbose',0);
-Res.sol = optimize(constr_det,objective,ops);
+Res.sol = optimize(constr_det,objective,ops)
 
 g_x = value(g);
 Res.pg  = g_x(1:end/2);
 Res.eta = g_x(const.ngen+1:end);
 Res.gencost = value(J_g);
 Res.time = toc+Des_DCOPF.sol.solvertime;
-
 Flow = value(const.Hg*(g(1:const.ngen)) - const.Hd*(const.d_hat));
 %% Sample based testing of Chance constraint DCOPF 
-nt_r_test =10000;
-[~,x_test] = xs_generate_DG(data,rbus,nt_r_test,length(rbus),rated_cap,dist_type);
-
-
+nt_r_x =10000;
+x_test_for_compare_118_57;
+ Des_DCOPF.xs_pen = x_test;
   g_xb = g_x;
-for j= 1:nt_r_test
-[A1_test(:,:,j),Ao_test(:,j)] = dcopf_a1ao_dhatg(x_test(j,:)',data,rbus);
-                   F_x(:,j)   =  A1_test(:,:,j)*g_xb + Ao_test(:,j);   
-                   Pg_all (:,j) = Res.pg + Res.eta*sum(x_test(j,:));
-                   load_all (:,j) = sum(const.d_hat)+sum(x_test(j,:));
+  g_xb(1:const.ngen)=g_xb(1:const.ngen);
+parfor j= 1:nt_r_x
+[A1_test(:,:,j),Ao_test(:,j)] = dcopf_a1ao_dhatg(x_test(j,:)',data);
+                   F_x(:,j)   =  A1_test(:,:,j)*g_xb + Ao_test(:,j);           
 end
 % Line_limit = repmat(const.f_u,[1,nt_r_x]);
 % flow_vp = abs(Flow)-Line_limit;
 F_x > 10^(-3);
 Res.vio_individual = sum(ans,2);
-Res.eps_individual = Res.vio_individual/nt_r_test;
+Res.eps_individual = Res.vio_individual/nt_r_x;
 [Res.max_eps_individual,~] = max(Res.eps_individual);
 
 Res.vio_joint = sum(ans);
 Res.vio_idx = Res.vio_joint >=1;
-Res.eps_joint = (sum(Res.vio_idx)/nt_r_test);
+Res.eps_joint = (sum(Res.vio_idx)/nt_r_x);
 Res.costs = [ value(w_mmd_pg*mmd_pg)  value(w_mmd_alpha*mmd_alpha) w_j*value(J_g)  ];%((value(J_g)-DC_det.f)/DC_det.f)*100
 
+
+Res.w_j = w_j; 
+Res.w_mmd_pg = w_mmd_pg;
+Res.w_mmd_alpha = w_mmd_alpha;
+Res.costs = [ value(w_mmd_pg*mmd_pg)  value(w_mmd_alpha*mmd_alpha) w_j*value(J_g)  ];%((value(J_g)-DC_det.f)/DC_det.f)*100
+
+rbus = const.loadbuses;
+
+ %
 % Sample approximation code
-tic
-[Res.SA_DC_CCOPF] = sample_approximation(data,Des_DCOPF,x_test,solver_name,rbus,rated_cap,dist_type);
-% Res.eps_joint
-% Res.gencost
-% % Res.SA_DC_CCOPF
-% Res.SA_DC_CCOPF.eps_joint
-Res.SA_DC_CCOPF.time = toc;
+% tic
+% [Res.SA_DC_CCOPF] = sample_approximation(data,Des_DCOPF,solver_name,rbus);
+%  Res.SA_DC_CCOPF.time = toc;
+% eps_obs_joint = SA_DC_CCOPF.eps_joint
+% SA_DC_CCOPF.obj
 
-Res
-
-% Res.w_j = w_j; 
-% Res.w_mmd_pg = w_mmd_pg;
-% Res.w_mmd_alpha = w_mmd_alpha;
-
-fname = sprintf('Res_30_mix2_%d_%d_%d.mat', rbus);
-save(fname,'Res');
-
-function [A_1,A_o]= dcopf_a1ao_dhatg(xi,data,rbus)
+function [A_1,A_o]= dcopf_a1ao_dhatg(xi,data)
 const = ex_extract_ccDCOPF(data); %% Extract information from the MPC structure
-const.Hr = const.H(:,rbus);
 I = eye(const.ngen,const.ngen);
 Mg_up = [I sum(xi)*I];
 A_1 = [Mg_up;-Mg_up;const.Hg*Mg_up;-const.Hg*Mg_up]; % Mg_down = -Mg_up;
 A_o = [-const.g_u;...%-const.g_u-I*(const.d_hatg+xi(const.genbuses));
         const.g_l;...
-       -const.Hd*(const.d_hat)-const.Hr*xi-const.f_u;...
-        const.Hd*(const.d_hat)+const.Hr*xi+const.f_l];
+       -const.Hd*(const.d_hat+xi)-const.f_u;...
+        const.Hd*(const.d_hat+xi)+const.f_l];
 
 end
 
@@ -267,16 +242,15 @@ end
 
 
 
-
-function[Des_DCOPF] = desired_dist_DCOPF_local(data,nt_r,rbus,frac_pen,dist_type,solver_name)
+function[Des_DCOPF] = desired_dist_DCOPF_local(data,target_size,nt_r,frac_pen,dist_type,solver_name)
+% data = case30;
 % base =100;
 const = ex_extract_ccDCOPF(data); %% Extract information from the MPC structure
 % target_size = 100; % Number of samples used for SAA
-const.g_u = const.g_u*0.9;
-const.Hr = const.H(:,rbus);
-rated_cap = sum(data.bus(const.loadbuses,3)*frac_pen)/length(rbus); % Total Rated capacity is fraction of total load at load buses
-% dist_type = 'beta';
-[~,xs_pen] = xs_generate_DG(data,rbus,nt_r,length(rbus),rated_cap,dist_type);
+
+rated_cap = sum(data.bus(const.loadbuses,3)*frac_pen)/length(const.loadbuses); % Total Rated capacity is fraction of total load at load buses
+dist_type = 'beta';
+[~,xs_pen] = xs_generate_DG(data,const.loadbuses,nt_r,length(const.loadbuses),rated_cap,dist_type);
 
 % tau = 0.05;
 % % % % Constructing the two dataset given by the Ashley M Hou et.al 2020
@@ -291,11 +265,11 @@ rated_cap = sum(data.bus(const.loadbuses,3)*frac_pen)/length(rbus); % Total Rate
 % xi(:,ii) = mvnrnd(zeros(length(const.loadbuses),1),sig(:,:,ii))';
 % end
 % xs_pen = xi';
-% 
-% load('data_pglib_118_tau0a05.mat');
-% xs_pen = xi';
-[~,Des_DCOPF.desired_beta,Des_DCOPF.xi,Des_DCOPF.K,Des_DCOPF.sol_rd] = reduced_set_l1_penalization(solver_name,xs_pen,5,[]);
 
+% xi = load('data_pglib_118_tau0a05.mat');
+% xs_pen = xi';
+
+[~,Des_DCOPF.desired_beta,Des_DCOPF.xi,Des_DCOPF.K,Des_DCOPF.sol_rd] = reduced_set_l1_penalization_local(solver_name,xs_pen,5,[]);
 
 
 Des_DCOPF.xs_pen = xs_pen;
@@ -303,7 +277,32 @@ total_var = sum( var(xs_pen));
 Des_DCOPF.total_var = total_var;
 
 xi_all = Des_DCOPF.xi;
+target_size = length(xi_all(:,1));
 
+% iz = find(round(xs_pen(1,:),6) == 0);
+% xs_nz = xs_pen;
+% xs_nz(:,iz) = [];
+% Des_DCOPF.xs_nonzero = xs_nz;
+% Des_DCOPF.xs_pen = xs_pen;
+% total_var = sum( var(xs_pen));
+% Des_DCOPF.total_var = total_var;
+% 
+% [big_sample_size_row,~, ~]=size(Des_DCOPF.xs_pen);
+% indices=randi(big_sample_size_row, 1 ,target_size);
+% Des_DCOPF.xi_all=Des_DCOPF.xs_pen(indices,:,:);
+% Des_DCOPF.xi = xs_pen(indices,:,:);
+% op = struct();
+% xi = Des_DCOPF.xi;
+% xi_all = Des_DCOPF.xi_all;
+% % for i=1:no_o
+% %reduced_sample(:,:,x)=sample(indices(x,:),:,x);
+% %reduced_sample1(:,:,x)=sample1(indices(x,:),:,x);
+% ker= myProcessOptions(op, 'mmd_kernel', KGaussian(meddistance(xi)^2)); 
+% kz=ker.eval(xi', xi');
+% kzx=ker.eval(xi', xs_pen');
+% alp=1*ones(big_sample_size_row,1);
+% Des_DCOPF.desired_beta=(pinv(kz)*kzx*alp)./big_sample_size_row; % Weight of the reduced set 
+% end
 
 
 %% Formulate the cc-DCOPF Problem via SAA
@@ -337,12 +336,12 @@ constr_det = [sum(g(1:const.ngen)) == sum(const.d_hat);
 
 const_sample = [const.g_l <= g(1:const.ngen) + sum(xi_all(1,:))*g(const.ngen+1:end) <= const.g_u; % Generator Limits
                const.f_l <= const.Hg*(g(1:const.ngen)+...
-               sum(xi_all(1,:))*g(const.ngen+1:end)) - const.Hd*(const.d_hat)- const.Hr*xi_all(1,:)' <= const.f_u]; 
-for j = 2:length(Des_DCOPF.xi(:,1))
+               sum(xi_all(1,:))*g(const.ngen+1:end)) - const.Hd*((const.d_hat+xi_all(1,:)')) <= const.f_u]; 
+for j = 2:target_size
  const_sample = [ const_sample; 
                const.g_l <= g(1:const.ngen)+ sum(xi_all(j,:))*g(const.ngen+1:end) <= const.g_u; % Generator Limits
                const.f_l <= const.Hg*(g(1:const.ngen)+...
-               sum(xi_all(j,:))*g(const.ngen+1:end)) - const.Hd*(const.d_hat)- const.Hr*xi_all(1,:)' <= const.f_u]; % Power Flow limits
+               sum(xi_all(j,:))*g(const.ngen+1:end)) - const.Hd*((const.d_hat+xi_all(j,:)')) <= const.f_u]; % Power Flow limits
 end
 
 ops = sdpsettings('solver',solver_name,'verbose',0);
@@ -355,6 +354,7 @@ Des_DCOPF.pg = value(g(1:const.ngen));
 Des_DCOPF.eta = value(g(const.ngen+1:end));
 Des_DCOPF.g = value(g);
 
+%
 
 
 end
@@ -362,20 +362,21 @@ end
 
 %% Large Sample Based DCOPF and Testing of Violation probability 
 
-function [SA_DC_CCOPF] = sample_approximation(data,Des_DCOPF,x_test,solver_name,rbus,rated_cap,dist_type)
+function [SA_DC_CCOPF] = sample_approximation(data,Des_DCOPF,solver_name,rbus)
 
 % solver_name = 'mosek';
 
-tic
-[SA_DC_CCOPF] = desired_dist_DCOPF_sample(data,Des_DCOPF,solver_name,rbus,rated_cap,dist_type);
 
-SA_DC_CCOPF.time = toc;
+[SA_DC_CCOPF] = desired_dist_DCOPF_sample(data,Des_DCOPF,solver_name);
+
+
 
 %% Testing via Samples 
 nt_r_x = 10000;
+x_test = Des_DCOPF.xs_pen; 
 g_x = SA_DC_CCOPF.g;
-for j= 1:nt_r_x
-[A1_test(:,:,j),Ao_test(:,j)] = dcopf_a1ao_dhatr(x_test(j,:)',data,rbus);
+parfor j= 1:nt_r_x
+[A1_test(:,:,j),Ao_test(:,j)] = dcopf_a1ao(x_test(j,:)',data,rbus);
  F_x(:,j)   = A1_test(:,:,j)*g_x + Ao_test(:,j);
 end
  
@@ -392,18 +393,18 @@ SA_DC_CCOPF.eps_joint = (sum(SA_DC_CCOPF.vio_idx)/nt_r_x);
 
 
 
-function[SA_DCOPF] = desired_dist_DCOPF_sample(data,Des_DCOPF,solver_name,rbus,rated_cap,dist_type)
+function[SA_DCOPF] = desired_dist_DCOPF_sample(data,Des_DCOPF,solver_name)
 % data = case30;
 % base =100;
-const = ex_extract_ccDCOPF(data); %% Extract information from the MPC structureconst.Hr = const.H(:,rbus);
-const.Hr = const.H(:,rbus);
-
+const = ex_extract_ccDCOPF(data); %% Extract information from the MPC structure
 SA_DCOPF.target_size = round((2/0.05)*(log(1/10^(-4))+2*const.ngen),0); % Number of samples used for SAA
-[~,xs] = xs_generate_DG(data,rbus,SA_DCOPF.target_size,length(rbus),rated_cap,dist_type);
 
-
+[big_sample_size_row,~, ~]=size(Des_DCOPF.xs_pen);
+indices=randi(big_sample_size_row, 1 ,SA_DCOPF.target_size);
+xs_pen = Des_DCOPF.xs_pen(indices,:,:);
 
 total_var = Des_DCOPF.total_var;
+target_size = SA_DCOPF.target_size;
 %% Formulate the cc-DCOPF Problem via SAA
 % Detailed Formulation
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -433,14 +434,12 @@ constr_det = [sum(g(1:const.ngen)) == sum(const.d_hat);
 
 % Sample based constraints for total N samples of xi
 
-const_sample = [const.g_l <= g(1:const.ngen) + sum(xs(1,:))*g(const.ngen+1:end) <= const.g_u; % Generator Limits
-               const.f_l <= const.Hg*(g(1:const.ngen)+...
-               sum(xs(1,:))*g(const.ngen+1:end)) - const.Hd*(const.d_hat)- const.Hr*xs(1,:)' <= const.f_u]; 
-for s = 2:length(xs(:,1))
+const_sample = [const.g_l <= g(1:const.ngen) + sum(xs_pen(1,:))*g(const.ngen+1:end) <= const.g_u; % Generator Limits
+               const.f_l <= const.Hg*((g(1:const.ngen))+ sum(xs_pen(1,:))*g(const.ngen+1:end)) - const.Hd*((const.d_hat+xs_pen(1,:)')) <= const.f_u]; 
+for jj = 2:target_size
  const_sample = [ const_sample; 
-               const.g_l <= g(1:const.ngen)+ sum(xs(s,:))*g(const.ngen+1:end) <= const.g_u; % Generator Limits
-               const.f_l <= const.Hg*(g(1:const.ngen)+...
-               sum(xs(s,:))*g(const.ngen+1:end)) - const.Hd*(const.d_hat)- const.Hr*xs(1,:)' <= const.f_u]; % Power Flow limits
+               const.g_l <= g(1:const.ngen)+ sum(xs_pen(jj,:))*g(const.ngen+1:end) <= const.g_u; % Generator Limits
+               const.f_l <= const.Hg*((g(1:const.ngen))+ sum(xs_pen(jj,:))*g(const.ngen+1:end)) - const.Hd*((const.d_hat+xs_pen(jj,:)')) <= const.f_u]; % Power Flow limits
 end
 
 ops = sdpsettings('solver',solver_name,'verbose',0);
@@ -458,18 +457,57 @@ SA_DCOPF.g = value(g);
 
 end
 
-function [A_1,A_o]= dcopf_a1ao_dhatr(xi,data,rbus)
-const = ex_extract_ccDCOPF(data); %% Extract information from the MPC structure
-const.Hr = const.H(:,rbus);
-I = eye(const.ngen,const.ngen);
-Mg_up = [I sum(xi)*I];
-A_1 = [Mg_up;-Mg_up;const.Hg*Mg_up;-const.Hg*Mg_up]; % Mg_down = -Mg_up;
-A_o = [-const.g_u;...%-const.g_u-I*(const.d_hatg+xi(const.genbuses));
-        const.g_l;...
-       -const.Hd*(const.d_hat)-const.Hr*xi-const.f_u;...
-        const.Hd*(const.d_hat)+const.Hr*xi+const.f_l];
 
 end
+
+
+%% ------------------------------------------------------------------------------------------------------------
+function [z,b_opt,rd_set,K,sol] = reduced_set_l1_penalization_local(solver_name,xs,lambda,K)
+
+yalmip clear
+
+nt_r = size(xs,1);
+if isempty(K)
+    op = struct();
+    ker= myProcessOptions(op, 'mmd_kernel', KGaussian(meddistance(xs)^2)); 
+    K=ker.eval(xs', xs');
 end
+alp=1*ones(nt_r,1)/nt_r;
+
+K_alp = K*repmat(alp,[1,nt_r]);
+
+b_p = sdpvar(nt_r,1);
+b_n = sdpvar(nt_r,1);
+cj = ones(nt_r,1);
+
+obj_1 = [b_p-b_n]'*K*[b_p-b_n];
+obj_2 = lambda*cj'*(b_p+b_n) - 2 * sum(K_alp)*[b_p-b_n];
+cons = [b_p >= 0; b_n>=0];
 
 
+ops = sdpsettings('solver',solver_name,'verbose',0);
+sol = optimize(cons,obj_1+obj_2,ops);
+
+
+b = round(value(b_p-b_n));
+
+z = b~=0;
+
+rd_set = xs(z,:); 
+op = struct();
+ker= myProcessOptions(op, 'mmd_kernel', KGaussian(meddistance(rd_set)^2)); 
+kzx = ker.eval(rd_set', xs');
+kz=ker.eval(rd_set', rd_set');
+b_opt = (pinv(kz)*kzx*alp)./nt_r; % Weight of the reduced set 
+
+b_opt = b_opt/sum(b_opt);
+
+
+
+
+
+
+
+
+%% --------------------------------------------------------------------------- Local COdes
+end

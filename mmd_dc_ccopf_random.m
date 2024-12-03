@@ -10,9 +10,12 @@
 % Parikshit 
 % 3 Sept 2021
 
+
 % Study : 
 %         A) Effect of weights
 %         b) Effect of number of samples
+
+
 %-----------------------------------------------------------------------------------------------------------
 clear
 clc
@@ -20,22 +23,20 @@ clc
 format short g
 
 
-data = ext2int(pglib_opf_case30_as);
-% data.gen(:,10) = 0;
-data.bus(:,3) = data.bus(:,3)*1.1;
-
-data.gen(:,9) = data.gen(:,9);
+data = ext2int(pglib_opf_case57_ieee);
+data.gen(:,10) = 0;
+% data.gen(:,9) = data.gen(:,9)*2;
 data.branch(:,6) = data.branch(:,6);
 
-solver_name = 'mosek';
- dist_type = 'beta';
- frac_pen = 0.20;
+solver_name = 'fmincon';
+dist_type = 'normal';
+frac_pen = 0.30;
 w_j = 1; 
 % with normal beta 400 for 25% normal,beta, laplace & 1000 for mix    Weibull does not converge 
-w_mmd_pg = 0.001; % 0.001 for normal, beta ,laplace  for mix 
+w_mmd_pg = 0.0009; % 0.001 for normal, beta ,laplace  for mix 
 
 % 1000000 fixed with simple beta
-w_mmd_alpha = 50; % with sum_beta = 1;
+w_mmd_alpha = 1000; % with sum_beta = 1;
 % target_size = 150; % Number of samples used for mmd construction 
 
 
@@ -43,11 +44,9 @@ w_mmd_alpha = 50; % with sum_beta = 1;
 Res.Det_DCOPF = Det_DCOPF;
 % DC_det = rundcopf(data);
 
- nt_r = 10000; % Total number of samples nt_r >>>>> N
+nt_r = 500; % Total number of samples nt_r >>>>> N
 
-rbus = [2;16;21];
-% rbus = find(data.bus(:,3) > 0);
-Res.rbus = rbus;
+rbus = [8;15;21];
 
 [Des_DCOPF] = desired_dist_DCOPF_local(data,nt_r,rbus,frac_pen,dist_type,solver_name);
 Res.Des_DCOPF = Des_DCOPF;
@@ -111,7 +110,7 @@ mmd_A = Des_DCOPF.desired_beta' * K_FsFs * Des_DCOPF.desired_beta ;
 %  < mu_d , mu(g) > = < mu_d , mu_Ao > + < mu_d , mu_A1) > = mmd_B_l(g) + mmd_B_c
 desired_beta = Des_DCOPF.desired_beta;
 hd = ones(1,2*const.ngen);
-parfor k =const.ngen+1:2*const.ngen
+for k =const.ngen+1:2*const.ngen
  Ak = reshape(A1_rd_set(:,k,:),[size(A1_rd_set,1),target_size]);
 hd(k) =meddistance(F_star'*Ak)^2;
 end
@@ -120,7 +119,7 @@ hd(hd==0)=1;
 %% The Ak cooresponding to Pg valus is same becoz uncertainty donot affect the unit commitment. Thus, mmd_B_1 = 0 for Pg values
  mmd_B_1 = zeros(2*const.ngen,1); 
  s = size(A1_rd_set,1);
-parfor k =const.ngen+1:2*const.ngen % Only for alpha values need to be calculated
+for k =const.ngen+1:2*const.ngen % Only for alpha values need to be calculated
 Ak = reshape(A1_rd_set(:,k,:),[s,target_size]);
 kerFAk = myProcessOptions(op, 'mmd_kernel', KGaussian(hd(k))); 
 K_FsAk = kerFAk.eval(F_star, Ak);
@@ -134,12 +133,18 @@ mmd_B_c = Des_DCOPF.desired_beta' * K_FsAo * rd_set_coeff;
 
 %%  < mu(g) , mu(g) > = Quadra  term + Linear term + Constant term = mmd_C_q + mmd_C_l + mmd_C_c;
 % ---------------------------------------------------- Quadratic  Term -----------------------------------------------
-tau_K_AkAl_tau = zeros(2*const.ngen,2*const.ngen);
-h = h_making(const,Ak_all);
+% tau_K_AkAl_tau = zeros(2*const.ngen,2*const.ngen);
+% h = h_making(const,Ak_all);
   
 
-for k =1:const.ngen
-  for l = 1:const.ngen
+for m = 1:2*const.ngen
+    for l = 1:2*const.ngen
+     h(m,l) = meddistance(Ak_all(:,:,m)'*Ak_all(:,:,l))^2;
+    end
+end
+
+for k =1:2*const.ngen
+  for l = 1:2*const.ngen
 kerAkl = myProcessOptions(op, 'mmd_kernel', KGaussian(h(k,l))); % this is important to calculate correctly
 % B_ml = kerAkl.eval(Ak_all(:,:,k), Ak_all(:,:,l));
 tau_K_AkAl_tau (k,l) = rd_set_coeff' * kerAkl.eval(Ak_all(:,:,k), Ak_all(:,:,l)) * rd_set_coeff;
@@ -232,23 +237,22 @@ Res.vio_idx = Res.vio_joint >=1;
 Res.eps_joint = (sum(Res.vio_idx)/nt_r_test);
 Res.costs = [ value(w_mmd_pg*mmd_pg)  value(w_mmd_alpha*mmd_alpha) w_j*value(J_g)  ];%((value(J_g)-DC_det.f)/DC_det.f)*100
 
+% mmd_pg+mmd_alpha
+
 % Sample approximation code
-tic
+% tic
 [Res.SA_DC_CCOPF] = sample_approximation(data,Des_DCOPF,x_test,solver_name,rbus,rated_cap,dist_type);
-% Res.eps_joint
-% Res.gencost
-% % Res.SA_DC_CCOPF
+Res.eps_joint
+Res.gencost
+% Res.SA_DC_CCOPF
 % Res.SA_DC_CCOPF.eps_joint
-Res.SA_DC_CCOPF.time = toc;
-
-Res
-
+% Res.SA_DC_CCOPF.time = toc;
+% 
 % Res.w_j = w_j; 
 % Res.w_mmd_pg = w_mmd_pg;
 % Res.w_mmd_alpha = w_mmd_alpha;
 
-fname = sprintf('Res_30_mix2_%d_%d_%d.mat', rbus);
-save(fname,'Res');
+% Res
 
 function [A_1,A_o]= dcopf_a1ao_dhatg(xi,data,rbus)
 const = ex_extract_ccDCOPF(data); %% Extract information from the MPC structure
@@ -268,13 +272,16 @@ end
 
 
 
+
+
+
+
 function[Des_DCOPF] = desired_dist_DCOPF_local(data,nt_r,rbus,frac_pen,dist_type,solver_name)
 % base =100;
 const = ex_extract_ccDCOPF(data); %% Extract information from the MPC structure
 % target_size = 100; % Number of samples used for SAA
-const.g_u = const.g_u*0.9;
 const.Hr = const.H(:,rbus);
-rated_cap = sum(data.bus(const.loadbuses,3)*frac_pen)/length(rbus); % Total Rated capacity is fraction of total load at load buses
+rated_cap = sum(data.bus(const.loadbuses,3)*frac_pen)/length(const.loadbuses); % Total Rated capacity is fraction of total load at load buses
 % dist_type = 'beta';
 [~,xs_pen] = xs_generate_DG(data,rbus,nt_r,length(rbus),rated_cap,dist_type);
 
